@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 /*
- * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s: " fmt, KBUILD_MODNAME
@@ -125,7 +125,6 @@ static void msm_rpmh_master_stats_print_data(struct seq_file *s,
 static int rpmh_master_stats_show(struct seq_file *s, void *data)
 {
 	int i = 0;
-	size_t size = 0;
 	struct msm_rpmh_master_stats *record = NULL;
 
 	mutex_lock(&rpmh_stats_mutex);
@@ -140,7 +139,7 @@ static int rpmh_master_stats_show(struct seq_file *s, void *data)
 	for (i = 0; i < ARRAY_SIZE(rpmh_masters); i++) {
 		record = (struct msm_rpmh_master_stats *) qcom_smem_get(
 					rpmh_masters[i].pid,
-					rpmh_masters[i].smem_id, &size);
+					rpmh_masters[i].smem_id, NULL);
 		if (!IS_ERR_OR_NULL(record))
 			msm_rpmh_master_stats_print_data(s, record,
 			rpmh_masters[i].master_name);

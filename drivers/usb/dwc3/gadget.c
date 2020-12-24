@@ -815,7 +815,7 @@ static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 	dbg_log_string("START for %s(%d)", dep->name, dep->number);
 	dwc3_stop_active_transfer(dwc, dep->number, true);
 
-	if (dep->number == 1 && dwc->ep0state != EP0_SETUP_PHASE) {
+	if (dep->number == 0 && dwc->ep0state != EP0_SETUP_PHASE) {
 		unsigned int dir;
 
 		dbg_log_string("CTRLPEND(%d)", dwc->ep0state);
@@ -901,7 +901,12 @@ static void dwc3_stop_active_transfers_to_halt(struct dwc3 *dwc)
 		if (!(dep->flags & DWC3_EP_ENABLED))
 			continue;
 
-		dwc3_stop_active_transfer_noioc(dwc, dep->number, true);
+		/*
+		 * If the transfers didn't stop due to some reason
+		 * don't giveback the request to gadget driver.
+		 */
+		if (dwc3_stop_active_transfer_noioc(dwc, dep->number, true))
+			continue;
 
 		/* - giveback all requests to gadget driver */
 		while (!list_empty(&dep->started_list)) {
@@ -2247,7 +2252,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	dwc->softconnect = is_on;
 
 	if ((dwc3_is_otg_or_drd(dwc) && !dwc->vbus_active)
-			|| !dwc->gadget_driver) {
+		|| !dwc->gadget_driver || dwc->err_evt_seen) {
 		/*
 		 * Need to wait for vbus_session(on) from otg driver or to
 		 * the udc_start.
@@ -2309,8 +2314,15 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	ret = dwc3_gadget_run_stop(dwc, is_on, false);
 	spin_unlock_irqrestore(&dwc->lock, flags);
 	if (!is_on && ret == -ETIMEDOUT) {
-		dev_err(dwc->dev, "%s: Core soft reset...\n", __func__);
-		dwc3_device_core_soft_reset(dwc);
+		/*
+		 * If we fail to stop the controller then mark it as an error
+		 * event since it can lead the controller to go into an unknown
+		 * state.
+		 */
+		dbg_log_string("%s: error event seen\n", __func__);
+		dwc->err_evt_seen = true;
+		dwc3_notify_event(dwc, DWC3_CONTROLLER_ERROR_EVENT, 0);
+		dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_CLEAR_DB, 0);
 	}
 	enable_irq(dwc->irq);
 
@@ -2336,8 +2348,14 @@ static void dwc3_gadget_enable_irq(struct dwc3 *dwc)
 			DWC3_DEVTEN_USBRSTEN |
 			DWC3_DEVTEN_DISCONNEVTEN);
 
+	/*
+	 * Enable SUSPENDEVENT(BIT:6) for version 230A and above
+	 * else enable USB Link change event (BIT:3) for older version
+	 */
 	if (dwc->revision < DWC3_REVISION_230A)
 		reg |= DWC3_DEVTEN_ULSTCNGEN;
+	else
+		reg |= DWC3_DEVTEN_EOPFEN;
 
 	dwc3_writel(dwc->regs, DWC3_DEVTEN, reg);
 }
@@ -3219,17 +3237,17 @@ void dwc3_stop_active_transfer(struct dwc3 *dwc, u32 epnum, bool force)
 			dep->name, dep->number, ret);
 }
 
-void dwc3_stop_active_transfer_noioc(struct dwc3 *dwc, u32 epnum, bool force)
+int dwc3_stop_active_transfer_noioc(struct dwc3 *dwc, u32 epnum, bool force)
 {
 	struct dwc3_ep *dep;
 	struct dwc3_gadget_ep_cmd_params params;
 	u32 cmd;
-	int ret;
+	int ret = 0;
 
 	dep = dwc->eps[epnum];
 
 	if (!dep->resource_index)
-		return;
+		return ret;
 
 	if (dep->endpoint.endless)
 		dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_DISABLE_UPDXFER,
@@ -3245,6 +3263,7 @@ void dwc3_stop_active_transfer_noioc(struct dwc3 *dwc, u32 epnum, bool force)
 
 	dbg_log_string("%s(%d): endxfer ret:%d)",
 			dep->name, dep->number, ret);
+	return ret;
 }
 
 static void dwc3_clear_stall_all_ep(struct dwc3 *dwc)
@@ -3388,13 +3407,6 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	reg = dwc3_readl(dwc->regs, DWC3_DSTS);
 	speed = reg & DWC3_DSTS_CONNECTSPD;
 	dwc->speed = speed;
-
-	/* Enable SUSPENDEVENT(BIT:6) for version 230A and above */
-	if (dwc->revision >= DWC3_REVISION_230A) {
-		reg = dwc3_readl(dwc->regs, DWC3_DEVTEN);
-		reg |= DWC3_DEVTEN_EOPFEN;
-		dwc3_writel(dwc->regs, DWC3_DEVTEN, reg);
-	}
 
 	/* Reset the retry on erratic error event count */
 	dwc->retries_on_error = 0;

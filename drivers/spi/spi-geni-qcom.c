@@ -861,6 +861,7 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 				dev_info(mas->dev, "Failed to get rx DMA ch %ld\n",
 							PTR_ERR(mas->rx));
 				dma_release_channel(mas->tx);
+				goto setup_ipc;
 			}
 			mas->gsi = devm_kzalloc(mas->dev,
 				(sizeof(struct spi_geni_gsi) * NUM_SPI_XFER),
@@ -1108,12 +1109,30 @@ static void handle_fifo_timeout(struct spi_geni_master *mas,
 				"Failed to cancel/abort m_cmd\n");
 	}
 	if (mas->cur_xfer_mode == SE_DMA) {
-		if (xfer->tx_buf)
+		if (xfer->tx_buf) {
+			reinit_completion(&mas->xfer_done);
+			writel_relaxed(1, mas->base +
+				SE_DMA_TX_FSM_RST);
+			timeout =
+			wait_for_completion_timeout(&mas->xfer_done, HZ);
+			if (!timeout)
+				dev_err(mas->dev,
+					"DMA TX RESET failed\n");
 			geni_se_tx_dma_unprep(mas->wrapper_dev,
-					xfer->tx_dma, xfer->len);
-		if (xfer->rx_buf)
+				xfer->tx_dma, xfer->len);
+		}
+		if (xfer->rx_buf) {
+			reinit_completion(&mas->xfer_done);
+			writel_relaxed(1, mas->base +
+				SE_DMA_RX_FSM_RST);
+			timeout =
+			wait_for_completion_timeout(&mas->xfer_done, HZ);
+			if (!timeout)
+				dev_err(mas->dev,
+					"DMA RX RESET failed\n");
 			geni_se_rx_dma_unprep(mas->wrapper_dev,
-					xfer->rx_dma, xfer->len);
+				xfer->rx_dma, xfer->len);
+		}
 	}
 
 }
@@ -1128,6 +1147,12 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 
 	if ((xfer->tx_buf == NULL) && (xfer->rx_buf == NULL)) {
 		dev_err(mas->dev, "Invalid xfer both tx rx are NULL\n");
+		return -EINVAL;
+	}
+
+	/* Check for zero length transfer */
+	if (xfer->len < 1) {
+		dev_err(mas->dev, "Zero length transfer\n");
 		return -EINVAL;
 	}
 

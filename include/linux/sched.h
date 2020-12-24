@@ -134,6 +134,7 @@ enum fps {
 	FPS60 = 60,
 	FPS90 = 90,
 	FPS120 = 120,
+	FPS144 = 144,
 };
 
 #ifdef CONFIG_UXCHAIN
@@ -855,6 +856,8 @@ struct task_struct {
 	u64 cpu_cycles;
 	bool misfit;
 	u32 unfilter;
+	bool low_latency;
+	bool rtg_high_prio;
 #endif
 
 #ifdef CONFIG_CGROUP_SCHED
